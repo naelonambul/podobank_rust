@@ -1,0 +1,25 @@
+[package]
+name = "podobank-api"
+version = "0.1.0"
+edition = "2024"
+# sqlx 0.9.0이 요구하는 최소 버전(crates.io의 rust_version)
+rust-version = "1.94"
+publish = false
+
+[dependencies]
+# 웹 서버: 비동기라 Python의 프로세스 1개·스레드 40개 병목이 없다.
+axum = "0.8.9"
+tokio = { version = "1.54.1", features = ["full"] }
+# MariaDB: 연결 20개·대기 5초·READ COMMITTED를 Python과 같게 맞춘다.
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "mysql", "chrono", "macros"] }
+# MongoDB 공식 드라이버
+mongodb = "3.10.0"
+# 비밀번호 해시: 기본값(t=2, p=1)이 argon2-cffi(t=3, m=64MiB, p=4)와 달라 직접 맞춘다.
+argon2 = "0.6.0"
+prometheus-client = "0.25.2"
+reqwest = { version = "0.13.5", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.154"
+chrono = "0.4.45"
+chrono-tz = "0.10.4"
+uuid = { version = "1.29.0", features = ["v4"] }

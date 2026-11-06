@@ -1,0 +1,125 @@
+# 빌드·테스트 VM 1대 준비: Rust(rustup), MariaDB 11.4, MongoDB 8.0, Python 3.14.
+# wsl-vmware-lab에서 실행: ANSIBLE_TIMEOUT=60 bash configure-guest.sh <이 파일>
+# DB는 127.0.0.1에만 열고, 테스트 계정 비밀번호는 VM의 ~/.podobank-test.env(0600)에만 둔다.
+- hosts: podobank_build
+  become: true
+  vars:
+    mongodb_version: "8.0"
+    rust_toolchain: "1.94"
+    test_env: "/home/{{ ansible_user }}/.podobank-test.env"
+  tasks:
+    - name: Base packages
+      ansible.builtin.apt:
+        name: [build-essential, pkg-config, git, rsync, curl, ca-certificates, gnupg, software-properties-common, rustup]
+        update_cache: true
+
+    - name: MariaDB 11.4 repository key (same source as deploy/vm/common.sh)
+      ansible.builtin.get_url:
+        url: https://mariadb.org/mariadb_release_signing_key.pgp
+        dest: /etc/apt/keyrings/mariadb-keyring.pgp
+        mode: "0644"
+
+    - name: MariaDB 11.4 repository
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/mariadb.list
+        content: "deb [signed-by=/etc/apt/keyrings/mariadb-keyring.pgp] https://deb.mariadb.org/11.4/ubuntu noble main\n"
+        mode: "0644"
+
+    - name: MongoDB repository key (same source as deploy/vm/mongodb.sh)
+      ansible.builtin.shell: |
+        curl -fsSL "https://pgp.mongodb.com/server-{{ mongodb_version }}.asc" \
+          | gpg --dearmor --yes -o "/usr/share/keyrings/mongodb-server-{{ mongodb_version }}.gpg"
+      args:
+        creates: "/usr/share/keyrings/mongodb-server-{{ mongodb_version }}.gpg"
+
+    - name: MongoDB repository
+      ansible.builtin.copy:
+        dest: "/etc/apt/sources.list.d/mongodb-org-{{ mongodb_version }}.list"
+        content: "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-{{ mongodb_version }}.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/{{ mongodb_version }} multiverse\n"
+        mode: "0644"
+
+    - name: Python 3.14 (deadsnakes, same as deploy/vm/api.sh)
+      ansible.builtin.apt_repository:
+        repo: ppa:deadsnakes/ppa
+
+    - name: Database servers and Python
+      ansible.builtin.apt:
+        name: [mariadb-server, mariadb-client, mongodb-org, python3.14, python3.14-venv]
+        update_cache: true
+
+    - name: MariaDB settings (same time zone and charset as the master)
+      ansible.builtin.copy:
+        dest: /etc/mysql/mariadb.conf.d/60-podobank.cnf
+        content: |
+          [mariadb]
+          bind-address = 127.0.0.1
+          default_time_zone = "+09:00"
+          character-set-server = utf8mb4
+          collation-server = utf8mb4_unicode_ci
+        mode: "0644"
+      register: mariadb_conf
+
+    - name: Database services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: true
+        state: "{{ 'restarted' if (item == 'mariadb' and mariadb_conf.changed) else 'started' }}"
+      loop: [mariadb, mongod]
+
+    - name: Test credentials file (created once, never printed)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        umask 077
+        pw=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 24)
+        {
+          echo "TEST_DB_PASSWORD=$pw"
+          echo "TEST_MARIADB_URL=mysql+pymysql://podobank:$pw@127.0.0.1:3306/podobank_test"
+          echo "TEST_MONGODB_URL=mongodb://127.0.0.1:27017"
+        } > "{{ test_env }}"
+        chown {{ ansible_user }}: "{{ test_env }}"
+      args:
+        creates: "{{ test_env }}"
+        executable: /bin/bash
+      no_log: true
+
+    - name: Test database and account
+      ansible.builtin.shell: |
+        set -euo pipefail
+        pw=$(sed -n 's/^TEST_DB_PASSWORD=//p' "{{ test_env }}")
+        mariadb <<SQL
+        CREATE DATABASE IF NOT EXISTS podobank_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+        CREATE USER IF NOT EXISTS 'podobank'@'127.0.0.1' IDENTIFIED BY '$pw';
+        ALTER USER 'podobank'@'127.0.0.1' IDENTIFIED BY '$pw';
+        GRANT ALL PRIVILEGES ON podobank_test.* TO 'podobank'@'127.0.0.1';
+        FLUSH PRIVILEGES;
+        SQL
+      args:
+        executable: /bin/bash
+      no_log: true
+      changed_when: false
+
+    - name: Rust toolchain (minimal profile, for the login user)
+      become: false
+      ansible.builtin.shell: |
+        set -euo pipefail
+        rustup set profile minimal
+        rustup toolchain install {{ rust_toolchain }} --component clippy,rustfmt
+        rustup default {{ rust_toolchain }}
+        rustc --version
+      args:
+        executable: /bin/bash
+      register: rust
+      changed_when: "'installed' in rust.stderr"
+
+    - name: Versions
+      ansible.builtin.shell: |
+        rustc --version; cargo --version
+        mariadb --version; mongod --version | head -1; python3.14 --version
+        df -h / | tail -1
+      become: false
+      register: versions
+      changed_when: false
+
+    - name: Show versions
+      ansible.builtin.debug:
+        var: versions.stdout_lines

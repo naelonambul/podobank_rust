@@ -1,0 +1,17 @@
+{
+  "name": "podobank-persona-simulator",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "simulate": "node personas/scripts/run-playwright.mjs",
+    "simulate:watch": "node personas/scripts/run-playwright.mjs --watch",
+    "install-browser": "playwright install chromium"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "playwright": "^1.64.1"
+  }
+}
