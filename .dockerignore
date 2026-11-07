@@ -1,0 +1,12 @@
+**/.env
+**/.env.*
+**/*.env
+**/*.env.*
+.git
+**/.venv
+**/target
+**/node_modules
+**/__pycache__
+**/var
+**/.runtime
+**/*.tfstate*
