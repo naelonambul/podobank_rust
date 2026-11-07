@@ -1,0 +1,70 @@
+name: podobank-port-test
+services:
+  mariadb:
+    image: mariadb:11.4
+    mem_limit: 1g
+    environment:
+      MARIADB_DATABASE: podobank_test
+      MARIADB_USER: podobank
+      MARIADB_PASSWORD: ${TEST_DB_PASSWORD:?Set TEST_DB_PASSWORD in lab/compose/.env}
+      MARIADB_ROOT_PASSWORD: ${TEST_DB_ROOT_PASSWORD:?Set TEST_DB_ROOT_PASSWORD in lab/compose/.env}
+    command: ["--default-time-zone=+09:00", "--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    volumes:
+      - mariadb-test:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+  mongodb:
+    image: mongo:7.0.45
+    mem_limit: 2g
+    command: ["mongod", "--wiredTigerCacheSizeGB", "0.5"]
+    volumes:
+      - mongodb-test:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "quit(db.adminCommand({ping:1}).ok ? 0 : 1)"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+  python:
+    mem_limit: 1g
+    build:
+      context: .
+      dockerfile: lab/compose/python.Dockerfile
+    environment: &api-environment
+      MARIADB_URL: mysql+pymysql://podobank:${TEST_DB_PASSWORD:?Set TEST_DB_PASSWORD}@mariadb:3306/podobank_test
+      MONGODB_URL: mongodb://mongodb:27017
+      MONGODB_DB: podobank_test
+      COOKIE_SECURE: "false"
+      APP_LOG_PATH: /tmp/app.log
+      EVENT_LOG_PATH: /tmp/events.log
+    ports:
+      - "127.0.0.1:${PYTHON_PORT:-18001}:8000"
+    depends_on: &databases
+      mariadb:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=10)"]
+      interval: 3s
+      timeout: 12s
+      retries: 30
+  rust:
+    mem_limit: 1g
+    build:
+      context: .
+      dockerfile: lab/compose/rust.Dockerfile
+    environment: *api-environment
+    ports:
+      - "127.0.0.1:${RUST_PORT:-18101}:8000"
+    depends_on: *databases
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "--max-time", "10", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 3s
+      timeout: 12s
+      retries: 30
+volumes:
+  mariadb-test:
+  mongodb-test:

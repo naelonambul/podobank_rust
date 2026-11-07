@@ -5,7 +5,9 @@ mod api;
 mod config;
 mod db;
 mod error;
+mod input;
 mod request_id;
+mod security;
 
 use axum::Router;
 use axum::middleware;
@@ -34,6 +36,10 @@ pub fn create_app(state: AppState) -> Router {
     Router::new()
         .nest(API_PREFIX, api::router())
         .fallback(error::not_found)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            api::events::application_log,
+        ))
         .layer(middleware::from_fn(request_id::request_id))
         .with_state(state)
 }
@@ -48,9 +54,16 @@ async fn main() {
     let mongo = db::make_mongo(&settings.mongodb_url, &settings.mongodb_db)
         .await
         .expect("MONGODB_URL");
-    let state = AppState { settings, db, mongo };
+    let state = AppState {
+        settings,
+        db,
+        mongo,
+    };
+    api::events::ensure_indexes(&state).await;
 
     let addr = format!("{}:{}", arg("--host", "127.0.0.1"), arg("--port", "8000"));
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");
-    axum::serve(listener, create_app(state)).await.expect("serve");
+    axum::serve(listener, create_app(state))
+        .await
+        .expect("serve");
 }

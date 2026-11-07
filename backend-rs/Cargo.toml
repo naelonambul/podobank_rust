@@ -20,6 +20,8 @@ prometheus-client = "0.25.2"
 reqwest = { version = "0.13.5", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.154"
+# Python 세션과 호환되는 SHA-256 토큰 해시.
+sha2 = "0.11.1"
 chrono = "0.4.45"
 chrono-tz = "0.10.4"
 uuid = { version = "1.29.0", features = ["v4"] }

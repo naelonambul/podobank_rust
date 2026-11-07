@@ -243,3 +243,69 @@ erDiagram
 
 
 
+
+## Python·Rust 로컬 비교 테스트
+
+원본 동기화 기준: `933070618955507ed7b9f27a5f159fc07c0ecd80`.
+기존 포팅 기준 `c0b8758` 이후 변경은 배포·관측·부하 테스트이며, Python 백엔드 변경은 없습니다.
+
+Python API, Rust API, MariaDB 11.4, MongoDB 7.0.45만 Docker Compose로 실행합니다.
+상태 확인 API와 없는 경로의 오류 응답을 비교합니다.
+MongoDB 중단 시 `200`과 `mongodb: down`, MariaDB 중단 시 `503` 오류,
+각 DB 복구 후 정상 응답까지 자동으로 확인합니다. 요청 ID는 UUID 형식과 헤더·본문 일치를 검사합니다.
+아래 업무 비교 테스트는 일반 가입·로그인·로그아웃·세션 인증, 계좌·거래 내역 조회,
+입출금·받는 사람 조회·송금을 두 서버에 같은 시나리오로 실행합니다.
+Python의 API 계약, 세션 만료·로그인 잠금, 계좌 잠금 순서, 거래 경계, 한도와
+커밋 후 이벤트 기록을 기준으로 포팅했습니다. 성능 튜닝은 추가하지 않았습니다.
+카카오 외부 인증·카드 결제·대출과 프록시를 포함한 부하 비교는 이번 범위가 아닙니다.
+
+```bash
+python3 lab/compose/init-env.py
+bash lab/compose-test.sh
+# 업무 기능·동시성 비교 (실제 MariaDB·MongoDB 사용)
+bash lab/business-test.sh
+# MongoDB가 중단되어도 금융 거래가 성공하는지 비교 (종료 시 DB 재시작)
+bash lab/business-test.sh --faults
+```
+
+비밀값은 자동 생성한 `lab/compose/.env`에만 보관합니다. 포트 변경 예시는
+`lab/compose/.env.example`에 있습니다. 첫 빌드에는 이미지·패키지 다운로드가 필요합니다.
+Rust는 컴파일 작업 4개를 사용하고 디버그 정보를 생략합니다.
+실행 컨테이너 메모리 한도는 MariaDB 1GiB, MongoDB 2GiB, Python 1GiB,
+Rust 1GiB로 합계 5GiB이며, 이미지 빌드에 필요한 메모리는 별도입니다.
+MongoDB 내부 캐시는 512MiB로 제한합니다.
+이미지 빌드 단계에서 `cargo test --locked`와 `cargo build --locked`를 실행합니다.
+x86에서도 같은 명령을 사용하며 현재 머신의 실행 파일을 복사하지 않습니다.
+
+테스트 후 서버는 계속 실행됩니다. Python은 `http://127.0.0.1:18001`, Rust는
+`http://127.0.0.1:18101`에서 접근합니다. DB 포트는 호스트에 공개하지 않습니다.
+테스트 중단 시 DB 재시작을 시도하며, DB 데이터는 이 프로젝트 전용 볼륨에 유지합니다.
+상태 확인 테스트는 마이그레이션을 실행하지 않습니다. 업무 비교 테스트는 Python의
+기존 마이그레이션으로 공통 스키마를 준비하고 테스트용 고객·계좌를 추가합니다.
+기존 테이블을 비우지 않으며 테스트 데이터는 남습니다. DB 호스트가 `mariadb`, DB명이
+`podobank_test`인 격리된 Compose 구성에서만 업무 테스트를 실행합니다.
+
+업무 테스트는 비밀번호 해시·세션의 양방향 호환, 권한·입력 오류, 성공·실패 이벤트,
+잠금 대기 초과, 양방향 동시 송금, 동시 출금, 일일 한도 경합을 검사합니다.
+성공 건수와 잔액 변화, 원장 합계, 송금 출금·입금 원장 쌍도 확인합니다.
+이 테스트는 기능 비교이며 처리량·지연 수치를 측정하는 부하시험은 아닙니다.
+
+Rust는 기존 개발 빌드를 유지합니다. `sha2 = "0.11.1"`은 Python과 같은 SHA-256
+세션 토큰 해시를 저장하기 위해 추가했습니다. 구현 시 확인한 공식 API 문서:
+[Axum 추출기·오류 처리](https://github.com/tokio-rs/axum/blob/main/axum/src/docs/extract.md),
+[SQLx MySQL 오류 번호](https://docs.rs/sqlx/0.9.0/sqlx/mysql/struct.MySqlDatabaseError.html#method.number),
+[Argon2 비밀번호 해시](https://docs.rs/argon2/0.6.0/argon2/).
+
+```bash
+# 실행 상태 확인
+docker compose --env-file lab/compose/.env ps
+# 컨테이너와 네트워크 종료, DB 볼륨 유지
+docker compose --env-file lab/compose/.env down
+```
+
+기존 VM 배포용 `deploy/` 설정과는 별개입니다. DB가 준비된 뒤 API를 시작하도록
+[Compose 공식 문서의 service_healthy](https://docs.docker.com/compose/how-tos/startup-order/)를 사용합니다.
+
+MongoDB는 이전 Podobank Compose와 같은 `7.0.45`를 사용합니다. 이 머신의 Linux
+커널 `7.0.0-1013-oracle`에서는 MongoDB 8.0 이미지가 시작 단계에서 종료되었습니다.
+[MongoDB 공식 호환성 안내](https://www.mongodb.com/docs/v8.0/release-notes/8.0/)를 참고하세요.
